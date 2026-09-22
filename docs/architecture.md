@@ -46,7 +46,7 @@ An adapter that lacks this capability remains fully usable.
   active libretro core per process.
 - Hardware-rendered cores are not accepted yet; Game Boy-family cores normally
   provide the software framebuffers supported by the adapter.
-- Core options and system/save directories are not exposed yet.
+- Core options are not exposed yet.
 - Persistent save RAM has not been connected to the frontend yet.
 - Native cores are executable code and are not sandboxed.
 

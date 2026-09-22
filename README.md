@@ -33,7 +33,12 @@ cargo run --release -- --core /path/to/core --rom /path/to/game.gb
 
 On Windows, the core will normally be a `.dll`; on Linux it will normally be a
 `.so`. VoxelBoy automatically detects GB, GBC, and GBA ROMs by extension and
-the Game Boy Color cartridge flag. Use `--system` to override detection.
+the Game Boy Color cartridge flag. Use `--system` to override detection. The
+selected core must advertise support for the ROM's extension.
+
+By default, VoxelBoy exposes `boot/` as the libretro system directory and
+`saves/` as the core-managed save directory. These can be changed with
+`--system-directory` and `--save-directory`.
 
 ### Keyboard controls
 

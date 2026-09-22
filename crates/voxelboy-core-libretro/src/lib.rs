@@ -3,7 +3,7 @@
 mod ffi;
 
 use std::ffi::{CStr, CString, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
@@ -45,6 +45,20 @@ struct CallbackState {
     audio: Vec<i16>,
     input: InputState,
     error: Option<String>,
+    system_directory: Option<CString>,
+    save_directory: Option<CString>,
+    assets_directory: Option<CString>,
+}
+
+/// Frontend-owned directories exposed through the libretro environment.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LibretroConfig {
+    /// BIOS and other system-wide files requested by a core.
+    pub system_directory: Option<PathBuf>,
+    /// Core-managed persistent game data.
+    pub save_directory: Option<PathBuf>,
+    /// Optional core-specific assets.
+    pub assets_directory: Option<PathBuf>,
 }
 
 impl CallbackState {
@@ -137,6 +151,20 @@ impl LibretroCore {
     /// Returns an error if another core is active, the dynamic library or a
     /// required symbol cannot be loaded, or the ABI version is unsupported.
     pub fn load(path: &Path, systems: Vec<System>) -> Result<Self, CoreError> {
+        Self::load_with_config(path, systems, &LibretroConfig::default())
+    }
+
+    /// Loads a dynamic libretro core with frontend directory configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another core is active, a configured path contains
+    /// a null byte, the library cannot be loaded, or its ABI is unsupported.
+    pub fn load_with_config(
+        path: &Path,
+        systems: Vec<System>,
+        config: &LibretroConfig,
+    ) -> Result<Self, CoreError> {
         if CORE_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -146,7 +174,7 @@ impl LibretroCore {
             ));
         }
 
-        match unsafe { Self::load_exclusive(path, systems) } {
+        match unsafe { Self::load_exclusive(path, systems, config) } {
             Ok(core) => Ok(core),
             Err(error) => {
                 CORE_ACTIVE.store(false, Ordering::Release);
@@ -155,7 +183,11 @@ impl LibretroCore {
         }
     }
 
-    unsafe fn load_exclusive(path: &Path, systems: Vec<System>) -> Result<Self, CoreError> {
+    unsafe fn load_exclusive(
+        path: &Path,
+        systems: Vec<System>,
+        config: &LibretroConfig,
+    ) -> Result<Self, CoreError> {
         let library = unsafe { Library::new(path) }
             .map_err(|error| CoreError::Backend(format!("could not load core: {error}")))?;
         let functions = unsafe { Functions::load(&library) }?;
@@ -167,7 +199,7 @@ impl LibretroCore {
             )));
         }
 
-        reset_callbacks();
+        configure_callbacks(config)?;
         unsafe {
             (functions.set_environment)(environment_callback as EnvironmentCallback);
             (functions.set_video_refresh)(video_refresh_callback as VideoRefreshCallback);
@@ -265,6 +297,18 @@ impl EmulatorCore for LibretroCore {
             return Err(CoreError::InvalidRom(format!(
                 "core does not advertise support for {:?}",
                 game.system
+            )));
+        }
+        if let Some(path) = game.path
+            && !extension_supported(path, &self.valid_extensions)
+        {
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("<none>");
+            return Err(CoreError::InvalidRom(format!(
+                "core supports [{}], not '.{extension}' content",
+                self.valid_extensions.join(", ")
             )));
         }
 
@@ -409,6 +453,29 @@ fn reset_callbacks() {
     }
 }
 
+fn configure_callbacks(config: &LibretroConfig) -> Result<(), CoreError> {
+    let mut callbacks = CALLBACKS
+        .lock()
+        .map_err(|_| CoreError::Backend("libretro callback state was poisoned".into()))?;
+    *callbacks = CallbackState::default();
+    callbacks.system_directory = config
+        .system_directory
+        .as_deref()
+        .map(path_to_c_string)
+        .transpose()?;
+    callbacks.save_directory = config
+        .save_directory
+        .as_deref()
+        .map(path_to_c_string)
+        .transpose()?;
+    callbacks.assets_directory = config
+        .assets_directory
+        .as_deref()
+        .map(path_to_c_string)
+        .transpose()?;
+    Ok(())
+}
+
 unsafe fn optional_c_string(value: *const std::ffi::c_char) -> Option<String> {
     (!value.is_null()).then(|| {
         unsafe { CStr::from_ptr(value) }
@@ -435,6 +502,19 @@ fn identifier(name: &str) -> String {
         })
         .collect();
     id.trim_matches('-').to_owned()
+}
+
+fn extension_supported(path: &Path, supported: &[String]) -> bool {
+    if supported.is_empty() {
+        return true;
+    }
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            supported
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
 }
 
 unsafe extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bool {
@@ -464,9 +544,33 @@ unsafe extern "C" fn environment_callback(command: u32, data: *mut c_void) -> bo
                 false
             }
         }
+        ffi::ENVIRONMENT_GET_SYSTEM_DIRECTORY => {
+            return_directory(data, |callbacks| callbacks.system_directory.as_ref())
+        }
+        ffi::ENVIRONMENT_GET_SAVE_DIRECTORY => {
+            return_directory(data, |callbacks| callbacks.save_directory.as_ref())
+        }
+        ffi::ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY => {
+            return_directory(data, |callbacks| callbacks.assets_directory.as_ref())
+        }
         ffi::ENVIRONMENT_SET_SUPPORT_NO_GAME | ffi::ENVIRONMENT_GET_INPUT_BITMASKS => true,
         _ => false,
     }
+}
+
+fn return_directory(
+    data: *mut c_void,
+    select: impl FnOnce(&CallbackState) -> Option<&CString>,
+) -> bool {
+    if data.is_null() {
+        return false;
+    }
+    let Ok(callbacks) = CALLBACKS.lock() else {
+        return false;
+    };
+    let value = select(&callbacks).map_or(ptr::null(), |path| path.as_ptr());
+    unsafe { data.cast::<*const std::ffi::c_char>().write(value) };
+    true
 }
 
 unsafe extern "C" fn video_refresh_callback(
@@ -640,7 +744,9 @@ fn input_mask(input: InputState) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RetroPixelFormat, decode_pixel, identifier, input_mask};
+    use std::path::Path;
+
+    use super::{RetroPixelFormat, decode_pixel, extension_supported, identifier, input_mask};
     use voxelboy_core_api::InputState;
 
     #[test]
@@ -675,5 +781,12 @@ mod tests {
         assert_ne!(mask & (1 << 8), 0);
         assert_ne!(mask & (1 << 3), 0);
         assert_eq!(mask.count_ones(), 2);
+    }
+
+    #[test]
+    fn validates_content_extension_without_case_sensitivity() {
+        let supported = vec!["gb".to_owned(), "gbc".to_owned()];
+        assert!(extension_supported(Path::new("game.GBC"), &supported));
+        assert!(!extension_supported(Path::new("game.gba"), &supported));
     }
 }

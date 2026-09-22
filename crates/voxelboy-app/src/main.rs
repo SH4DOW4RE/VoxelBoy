@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, ValueEnum};
 use pixels::{Pixels, SurfaceTexture};
 use voxelboy_core_api::{EmulatorCore, GameImage, InputState, System, VideoFrame};
-use voxelboy_core_libretro::LibretroCore;
+use voxelboy_core_libretro::{LibretroConfig, LibretroCore};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -33,6 +33,14 @@ struct Arguments {
     /// Override automatic system detection.
     #[arg(long, value_enum, default_value_t = SystemArgument::Auto)]
     system: SystemArgument,
+
+    /// Directory containing boot ROMs and other core system files.
+    #[arg(long, default_value = "boot")]
+    system_directory: PathBuf,
+
+    /// Directory for persistent data written directly by cores.
+    #[arg(long, default_value = "saves")]
+    save_directory: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -321,7 +329,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         .system
         .resolve(&arguments.rom, &rom)
         .map_err(|message| format!("invalid ROM selection: {message}"))?;
-    let mut core = LibretroCore::load(&arguments.core, vec![system])?;
+    fs::create_dir_all(&arguments.system_directory)?;
+    fs::create_dir_all(&arguments.save_directory)?;
+    let core_config = LibretroConfig {
+        system_directory: Some(arguments.system_directory),
+        save_directory: Some(arguments.save_directory),
+        assets_directory: None,
+    };
+    let mut core = LibretroCore::load_with_config(&arguments.core, vec![system], &core_config)?;
     core.load_game(GameImage {
         data: &rom,
         path: Some(&arguments.rom),
