@@ -22,8 +22,9 @@ This repository contains the first architectural slice:
 - design notes for libretro and native core adapters.
 
 A basic desktop runner can load a software-rendered libretro core and ROM,
-display the core's 2D framebuffer, pace emulation from the core's reported
-timing, and forward keyboard input. Audio is captured but is not played yet.
+display either the core's 2D framebuffer or a GPU-instanced voxel scene, pace
+emulation from the core's reported timing, and forward keyboard input. Audio is
+captured but is not played yet.
 
 Run it with:
 
@@ -51,6 +52,21 @@ By default, VoxelBoy exposes `boot/` as the libretro system directory and
 | Pause | Space |
 | Reset | F2 |
 | Quit | Escape |
+
+### Voxel controls
+
+Voxel mode is enabled by default. The automatic converter removes the most
+common color in each frame as its provisional background and extrudes the
+remaining pixels according to luminance.
+
+| Action | Keyboard |
+| --- | --- |
+| Toggle 2D / voxel view | V |
+| Orbit left / right | Q / E |
+| Tilt up / down | R / F |
+| Zoom out / in | - / = |
+| Decrease / increase depth | [ / ] |
+| Reset camera | C |
 
 ## Planned system order
 

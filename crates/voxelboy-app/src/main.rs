@@ -1,3 +1,6 @@
+mod renderer;
+
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,6 +11,7 @@ use clap::{Parser, ValueEnum};
 use pixels::{Pixels, SurfaceTexture};
 use voxelboy_core_api::{EmulatorCore, GameImage, InputState, System, VideoFrame};
 use voxelboy_core_libretro::{LibretroConfig, LibretroCore};
+use voxelboy_voxel::{FramebufferProfile, Rgba8, voxelize_frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -15,9 +19,18 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::renderer::{CameraState, VoxelRenderer};
+
 const DEFAULT_FRAMES_PER_SECOND: f64 = 60.0;
 const INITIAL_SCALE: u32 = 4;
 const MAX_CATCH_UP_FRAMES: usize = 4;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RenderMode {
+    TwoDimensional,
+    #[default]
+    Voxel,
+}
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Game Boy-family emulation with voxel rendering")]
@@ -71,11 +84,15 @@ struct DesktopApp {
     input: InputState,
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
+    voxel_renderer: Option<VoxelRenderer>,
     frame_width: u32,
     frame_height: u32,
     frame_period: Duration,
     next_frame: Instant,
     paused: bool,
+    render_mode: RenderMode,
+    camera: CameraState,
+    depth_range: f32,
     fatal_error: Option<String>,
 }
 
@@ -100,11 +117,15 @@ impl DesktopApp {
             input: InputState::default(),
             window: None,
             pixels: None,
+            voxel_renderer: None,
             frame_width,
             frame_height,
             frame_period: Duration::from_secs_f64(1.0 / frames_per_second),
             next_frame: Instant::now(),
             paused: false,
+            render_mode: RenderMode::default(),
+            camera: CameraState::for_frame(frame_width, frame_height),
+            depth_range: 3.0,
             fatal_error: None,
         })
     }
@@ -134,8 +155,15 @@ impl DesktopApp {
         let surface = SurfaceTexture::new(size.width, size.height, Arc::clone(&window));
         let pixels = Pixels::new(self.frame_width, self.frame_height, surface)
             .map_err(|error| format!("could not initialize renderer: {error}"))?;
+        let voxel_renderer = VoxelRenderer::new(
+            pixels.device(),
+            pixels.surface_texture_format(),
+            size.width,
+            size.height,
+        );
         self.window = Some(window);
         self.pixels = Some(pixels);
+        self.voxel_renderer = Some(voxel_renderer);
         Ok(())
     }
 
@@ -176,9 +204,38 @@ impl DesktopApp {
             self.frame_height = frame.height;
         }
         copy_frame(frame, pixels.frame_mut())?;
-        pixels
-            .render()
-            .map_err(|error| format!("rendering failed: {error}"))
+        match self.render_mode {
+            RenderMode::TwoDimensional => pixels
+                .render()
+                .map_err(|error| format!("rendering failed: {error}")),
+            RenderMode::Voxel => {
+                let background = dominant_color(pixels.frame());
+                let profile = FramebufferProfile {
+                    background,
+                    depth_range: self.depth_range,
+                    ..FramebufferProfile::default()
+                };
+                let voxels = voxelize_frame(frame, profile).map_err(|error| error.to_string())?;
+                let renderer = self
+                    .voxel_renderer
+                    .as_mut()
+                    .ok_or_else(|| "voxel renderer is not initialized".to_owned())?;
+                renderer.update(
+                    pixels.device(),
+                    pixels.queue(),
+                    &voxels,
+                    frame.width,
+                    frame.height,
+                    self.camera,
+                );
+                pixels
+                    .render_with(|encoder, target, _context| {
+                        renderer.render(encoder, target);
+                        Ok(())
+                    })
+                    .map_err(|error| format!("voxel rendering failed: {error}"))
+            }
+        }
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, event: &KeyEvent) {
@@ -197,6 +254,49 @@ impl DesktopApp {
                     self.fail(event_loop, &error);
                 }
             }
+            KeyCode::KeyV if pressed && !event.repeat => {
+                self.render_mode = match self.render_mode {
+                    RenderMode::TwoDimensional => RenderMode::Voxel,
+                    RenderMode::Voxel => RenderMode::TwoDimensional,
+                };
+                self.request_redraw();
+            }
+            KeyCode::KeyQ if pressed => {
+                self.camera.yaw -= 0.1;
+                self.request_redraw();
+            }
+            KeyCode::KeyE if pressed => {
+                self.camera.yaw += 0.1;
+                self.request_redraw();
+            }
+            KeyCode::KeyR if pressed => {
+                self.camera.pitch = (self.camera.pitch + 0.1).clamp(-1.2, 1.2);
+                self.request_redraw();
+            }
+            KeyCode::KeyF if pressed => {
+                self.camera.pitch = (self.camera.pitch - 0.1).clamp(-1.2, 1.2);
+                self.request_redraw();
+            }
+            KeyCode::Minus if pressed => {
+                self.camera.distance = (self.camera.distance * 1.1).clamp(40.0, 1_000.0);
+                self.request_redraw();
+            }
+            KeyCode::Equal if pressed => {
+                self.camera.distance = (self.camera.distance * 0.9).clamp(40.0, 1_000.0);
+                self.request_redraw();
+            }
+            KeyCode::BracketLeft if pressed => {
+                self.depth_range = (self.depth_range - 0.25).max(0.0);
+                self.request_redraw();
+            }
+            KeyCode::BracketRight if pressed => {
+                self.depth_range = (self.depth_range + 0.25).min(12.0);
+                self.request_redraw();
+            }
+            KeyCode::KeyC if pressed && !event.repeat => {
+                self.camera = CameraState::for_frame(self.frame_width, self.frame_height);
+                self.request_redraw();
+            }
             KeyCode::ArrowUp => self.input.up = pressed,
             KeyCode::ArrowDown => self.input.down = pressed,
             KeyCode::ArrowLeft => self.input.left = pressed,
@@ -208,6 +308,12 @@ impl DesktopApp {
             KeyCode::KeyA => self.input.shoulder_left = pressed,
             KeyCode::KeyS => self.input.shoulder_right = pressed,
             _ => {}
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 }
@@ -239,6 +345,10 @@ impl ApplicationHandler for DesktopApp {
                     && let Err(error) = pixels.resize_surface(size.width, size.height)
                 {
                     self.fail(event_loop, &error);
+                } else if let (Some(pixels), Some(renderer)) =
+                    (self.pixels.as_ref(), self.voxel_renderer.as_mut())
+                {
+                    renderer.resize(pixels.device(), size.width, size.height);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -296,6 +406,27 @@ fn copy_frame(frame: VideoFrame<'_>, destination: &mut [u8]) -> Result<(), Strin
             .copy_from_slice(&frame.pixels[source_start..source_start + row_bytes]);
     }
     Ok(())
+}
+
+fn dominant_color(frame: &[u8]) -> Option<Rgba8> {
+    let mut counts = HashMap::<u32, usize>::new();
+    let (pixels, _remainder) = frame.as_chunks::<4>();
+    for pixel in pixels {
+        let packed = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
+        *counts.entry(packed).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_color, count)| *count)
+        .map(|(color, _count)| {
+            let [red, green, blue, alpha] = color.to_le_bytes();
+            Rgba8 {
+                red,
+                green,
+                blue,
+                alpha,
+            }
+        })
 }
 
 fn detect_system(path: &Path, rom: &[u8]) -> Result<System, String> {
@@ -362,7 +493,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 mod tests {
     use std::path::Path;
 
-    use super::{System, detect_system};
+    use super::{Rgba8, System, detect_system, dominant_color};
 
     #[test]
     fn detects_game_boy_variants() {
@@ -393,5 +524,19 @@ mod tests {
     #[test]
     fn requires_override_for_unknown_extension() {
         assert!(detect_system(Path::new("game.zip"), &[]).is_err());
+    }
+
+    #[test]
+    fn selects_most_common_frame_color_as_background() {
+        let frame = [1, 2, 3, 255, 10, 20, 30, 255, 1, 2, 3, 255, 1, 2, 3, 255];
+        assert_eq!(
+            dominant_color(&frame),
+            Some(Rgba8 {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 255,
+            })
+        );
     }
 }
