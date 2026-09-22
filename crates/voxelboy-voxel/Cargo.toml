@@ -1,0 +1,13 @@
+[package]
+name = "voxelboy-voxel"
+description = "Core-independent voxel conversion for VoxelBoy"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+voxelboy-core-api = { path = "../voxelboy-core-api" }
+
+[lints]
+workspace = true

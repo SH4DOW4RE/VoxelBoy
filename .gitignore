@@ -1,0 +1,21 @@
+# Local reference material; never redistribute it with VoxelBoy.
+/refs/
+
+# Rust build output.
+/target/
+
+# Games and user data.
+/roms/
+*.gb
+*.gbc
+*.gba
+*.sgb
+*.sav
+*.srm
+*.state
+
+# Editors and operating systems.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

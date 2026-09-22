@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/voxelboy-core-api",
+    "crates/voxelboy-voxel",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+repository = "https://github.com/SH4DOW4RE/VoxelBoy"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
