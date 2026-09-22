@@ -23,8 +23,9 @@
 # Saves
 /saves/
 
-# Tests logs
+# Local test artifacts
 *.txt
+*.png
 
 # Editors and operating systems.
 .idea/

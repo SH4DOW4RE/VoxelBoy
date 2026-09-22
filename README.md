@@ -55,9 +55,11 @@ By default, VoxelBoy exposes `boot/` as the libretro system directory and
 
 ### Voxel controls
 
-Voxel mode is enabled by default. The automatic converter removes the most
-common color in each frame as its provisional background and extrudes the
-remaining pixels according to luminance.
+Voxel mode is enabled by default. The automatic converter identifies the most
+common color in each frame, then removes only matching pixels connected to the
+frame border. Enclosed matching pixels, such as white artwork inside a white
+background, are preserved. Remaining pixels are extruded according to
+luminance.
 
 | Action | Keyboard |
 | --- | --- |

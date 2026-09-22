@@ -11,7 +11,7 @@ use clap::{Parser, ValueEnum};
 use pixels::{Pixels, SurfaceTexture};
 use voxelboy_core_api::{EmulatorCore, GameImage, InputState, System, VideoFrame};
 use voxelboy_core_libretro::{LibretroConfig, LibretroCore};
-use voxelboy_voxel::{FramebufferProfile, Rgba8, voxelize_frame};
+use voxelboy_voxel::{BackgroundPolicy, FramebufferProfile, Rgba8, voxelize_frame};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -212,6 +212,7 @@ impl DesktopApp {
                 let background = dominant_color(pixels.frame());
                 let profile = FramebufferProfile {
                     background,
+                    background_policy: BackgroundPolicy::BorderConnected,
                     depth_range: self.depth_range,
                     ..FramebufferProfile::default()
                 };

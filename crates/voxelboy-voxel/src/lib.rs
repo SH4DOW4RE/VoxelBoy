@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
+
 use voxelboy_core_api::{CoreError, PixelFormat, VideoFrame};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,15 +25,27 @@ pub struct Voxel {
 pub struct FramebufferProfile {
     /// Exact color treated as empty space. `None` keeps every pixel.
     pub background: Option<Rgba8>,
+    /// Controls whether matching object pixels are also removed.
+    pub background_policy: BackgroundPolicy,
     pub pixel_size: f32,
     pub minimum_depth: f32,
     pub depth_range: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum BackgroundPolicy {
+    /// Remove every pixel matching the configured background color.
+    #[default]
+    AllMatching,
+    /// Remove matches only when connected to an edge of the video frame.
+    BorderConnected,
 }
 
 impl Default for FramebufferProfile {
     fn default() -> Self {
         Self {
             background: None,
+            background_policy: BackgroundPolicy::default(),
             pixel_size: 1.0,
             minimum_depth: 0.25,
             depth_range: 1.0,
@@ -61,11 +75,25 @@ pub fn voxelize_frame(
         })
         .ok_or_else(|| CoreError::InvalidFrame("voxel count overflow".into()))?;
     let mut voxels = Vec::with_capacity(capacity);
+    let border_background = match (profile.background, profile.background_policy) {
+        (Some(background), BackgroundPolicy::BorderConnected) => {
+            Some(border_connected_background(frame, background, capacity))
+        }
+        _ => None,
+    };
 
     for y in 0..frame.height {
         for x in 0..frame.width {
             let color = read_pixel(frame, x, y);
-            if color.alpha == 0 || profile.background == Some(color) {
+            let index = usize::try_from(y).unwrap_or(0) * usize::try_from(frame.width).unwrap_or(0)
+                + usize::try_from(x).unwrap_or(0);
+            let is_background = match profile.background_policy {
+                BackgroundPolicy::AllMatching => profile.background == Some(color),
+                BackgroundPolicy::BorderConnected => border_background
+                    .as_ref()
+                    .is_some_and(|background| background[index]),
+            };
+            if color.alpha == 0 || is_background {
                 continue;
             }
             let luminance = (0.2126 * f32::from(color.red)
@@ -86,6 +114,122 @@ pub fn voxelize_frame(
     }
 
     Ok(voxels)
+}
+
+fn border_connected_background(
+    frame: VideoFrame<'_>,
+    background: Rgba8,
+    pixel_count: usize,
+) -> Vec<bool> {
+    let width = usize::try_from(frame.width).unwrap_or(0);
+    let height = usize::try_from(frame.height).unwrap_or(0);
+    let mut removed = vec![false; pixel_count];
+    let mut pending = VecDeque::new();
+
+    for x in 0..width {
+        enqueue_background(frame, background, x, 0, width, &mut removed, &mut pending);
+        if height > 1 {
+            enqueue_background(
+                frame,
+                background,
+                x,
+                height - 1,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+    }
+    for y in 1..height.saturating_sub(1) {
+        enqueue_background(frame, background, 0, y, width, &mut removed, &mut pending);
+        if width > 1 {
+            enqueue_background(
+                frame,
+                background,
+                width - 1,
+                y,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+    }
+
+    while let Some(index) = pending.pop_front() {
+        let x = index % width;
+        let y = index / width;
+        if x > 0 {
+            enqueue_background(
+                frame,
+                background,
+                x - 1,
+                y,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+        if x + 1 < width {
+            enqueue_background(
+                frame,
+                background,
+                x + 1,
+                y,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+        if y > 0 {
+            enqueue_background(
+                frame,
+                background,
+                x,
+                y - 1,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+        if y + 1 < height {
+            enqueue_background(
+                frame,
+                background,
+                x,
+                y + 1,
+                width,
+                &mut removed,
+                &mut pending,
+            );
+        }
+    }
+    removed
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enqueue_background(
+    frame: VideoFrame<'_>,
+    background: Rgba8,
+    x: usize,
+    y: usize,
+    width: usize,
+    removed: &mut [bool],
+    pending: &mut VecDeque<usize>,
+) {
+    let index = y * width + x;
+    if removed[index] {
+        return;
+    }
+    let Ok(x) = u32::try_from(x) else {
+        return;
+    };
+    let Ok(y) = u32::try_from(y) else {
+        return;
+    };
+    if read_pixel(frame, x, y) == background {
+        removed[index] = true;
+        pending.push_back(index);
+    }
 }
 
 fn read_pixel(frame: VideoFrame<'_>, x: u32, y: u32) -> Rgba8 {
@@ -122,7 +266,7 @@ fn read_pixel(frame: VideoFrame<'_>, x: u32, y: u32) -> Rgba8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{FramebufferProfile, Rgba8, voxelize_frame};
+    use super::{BackgroundPolicy, FramebufferProfile, Rgba8, voxelize_frame};
     use voxelboy_core_api::{PixelFormat, VideoFrame};
 
     #[test]
@@ -168,5 +312,47 @@ mod tests {
         assert_eq!(voxels[0].color.red, 255);
         assert_eq!(voxels[0].color.green, 0);
         assert_eq!(voxels[0].color.blue, 0);
+    }
+
+    #[test]
+    fn border_background_preserves_enclosed_matching_pixels() {
+        let white = [255, 255, 255, 255];
+        let black = [0, 0, 0, 255];
+        let mut pixels = Vec::new();
+        for y in 0..5 {
+            for x in 0..5 {
+                let is_outer_background = x == 0 || x == 4 || y == 0 || y == 4;
+                let color = if is_outer_background || (x == 2 && y == 2) {
+                    white
+                } else {
+                    black
+                };
+                pixels.extend_from_slice(&color);
+            }
+        }
+        let frame = VideoFrame {
+            pixels: &pixels,
+            width: 5,
+            height: 5,
+            pitch: 20,
+            format: PixelFormat::Rgba8888,
+        };
+        let profile = FramebufferProfile {
+            background: Some(Rgba8 {
+                red: 255,
+                green: 255,
+                blue: 255,
+                alpha: 255,
+            }),
+            background_policy: BackgroundPolicy::BorderConnected,
+            ..FramebufferProfile::default()
+        };
+
+        let voxels = voxelize_frame(frame, profile).expect("valid frame");
+        assert_eq!(voxels.len(), 9);
+        assert_eq!(
+            voxels.iter().filter(|voxel| voxel.color.red == 255).count(),
+            1
+        );
     }
 }
