@@ -21,8 +21,31 @@ This repository contains the first architectural slice:
 - tests for the fallback conversion;
 - design notes for libretro and native core adapters.
 
-There is no playable application yet. The libretro adapter is currently a
-library; a desktop runner and renderer are the next milestone.
+A basic desktop runner can load a software-rendered libretro core and ROM,
+display the core's 2D framebuffer, pace emulation from the core's reported
+timing, and forward keyboard input. Audio is captured but is not played yet.
+
+Run it with:
+
+```sh
+cargo run --release -- --core /path/to/core --rom /path/to/game.gb
+```
+
+On Windows, the core will normally be a `.dll`; on Linux it will normally be a
+`.so`. VoxelBoy automatically detects GB, GBC, and GBA ROMs by extension and
+the Game Boy Color cartridge flag. Use `--system` to override detection.
+
+### Keyboard controls
+
+| Game Boy input | Keyboard |
+| --- | --- |
+| D-pad | Arrow keys |
+| A / B | Z / X |
+| Start / Select | Enter / Backspace |
+| GBA L / R | A / S |
+| Pause | Space |
+| Reset | F2 |
+| Quit | Escape |
 
 ## Planned system order
 
