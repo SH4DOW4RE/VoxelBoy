@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/voxelboy-core-api",
+    "crates/voxelboy-core-libretro",
     "crates/voxelboy-voxel",
 ]
 resolver = "2"

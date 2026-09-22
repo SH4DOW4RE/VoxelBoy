@@ -14,12 +14,15 @@ adapter.
 This repository contains the first architectural slice:
 
 - a core-neutral emulator API;
+- dynamic loading of software-rendered libretro cores;
+- video, audio, input, timing, and save-state bridging for libretro;
 - capability negotiation for optional scene metadata;
 - a core-independent framebuffer-to-voxel fallback;
 - tests for the fallback conversion;
 - design notes for libretro and native core adapters.
 
-There is no playable application yet.
+There is no playable application yet. The libretro adapter is currently a
+library; a desktop runner and renderer are the next milestone.
 
 ## Planned system order
 

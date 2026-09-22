@@ -25,9 +25,9 @@ tied to one core's lifecycle or internal data layout.
 
 ## Core integrations
 
-The first general-purpose adapter should load libretro-compatible dynamic
-libraries. This supplies the common denominator needed for user-selectable
-cores: game loading, video, audio, input, save RAM, and save states.
+The general-purpose adapter loads libretro-compatible dynamic libraries. This
+supplies the common denominator needed for user-selectable cores: game loading,
+software-rendered video, audio, input, timing, and save states.
 
 Libretro's normal video callback supplies a composited frame. That is enough
 for the fallback voxelizer but cannot reliably identify which pixels belong to
@@ -39,6 +39,16 @@ optional `SemanticScene` capability. It can be implemented by:
 3. a VoxelBoy-owned core in the future.
 
 An adapter that lacks this capability remains fully usable.
+
+### Current libretro limitations
+
+- Libretro's callback ABI is process-global, so VoxelBoy currently permits one
+  active libretro core per process.
+- Hardware-rendered cores are not accepted yet; Game Boy-family cores normally
+  provide the software framebuffers supported by the adapter.
+- Core options and system/save directories are not exposed yet.
+- Persistent save RAM has not been connected to the frontend yet.
+- Native cores are executable code and are not sandboxed.
 
 ## Voxel conversion tiers
 
@@ -80,4 +90,3 @@ different game state, that remains a core compatibility issue.
 User-supplied native cores are executable code and are not a security sandbox.
 The UI must clearly show a core's path and origin before loading it. Hashes can
 identify known builds, but they do not make an untrusted library safe.
-

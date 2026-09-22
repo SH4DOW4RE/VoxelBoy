@@ -4,6 +4,7 @@
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
+use std::path::Path;
 
 /// Hardware families understood by the frontend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,6 +13,23 @@ pub enum System {
     GameBoyColor,
     GameBoyAdvance,
     SuperGameBoy,
+}
+
+/// Game content supplied to a core.
+#[derive(Clone, Copy, Debug)]
+pub struct GameImage<'a> {
+    pub data: &'a [u8],
+    /// Required by cores that load companion files or map content themselves.
+    pub path: Option<&'a Path>,
+    pub system: System,
+}
+
+/// Timing reported by the loaded game and selected core.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SystemTiming {
+    pub frames_per_second: f64,
+    /// Interleaved stereo samples use this per-channel rate.
+    pub audio_sample_rate: f64,
 }
 
 /// Pixel layout of a core-owned video buffer.
@@ -142,7 +160,7 @@ pub trait EmulatorCore {
     /// # Errors
     ///
     /// Returns an error when the image is invalid or unsupported by the core.
-    fn load_game(&mut self, rom: &[u8]) -> Result<System, CoreError>;
+    fn load_game(&mut self, game: GameImage<'_>) -> Result<System, CoreError>;
 
     fn unload_game(&mut self);
 
@@ -162,6 +180,10 @@ pub trait EmulatorCore {
 
     fn video_frame(&self) -> Option<VideoFrame<'_>>;
     fn audio_samples(&self) -> &[i16];
+
+    fn system_timing(&self) -> Option<SystemTiming> {
+        None
+    }
 
     fn semantic_scene(&self) -> Option<&SemanticScene> {
         None
